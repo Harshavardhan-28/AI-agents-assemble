@@ -1,0 +1,125 @@
+# Kestra AI Agent Flow for Smart Fridge Recipe Assistant
+# 
+# HOW TO USE:
+# 1. Start Kestra: docker run --pull=always --rm -it -p 8080:8080 --user=root -v /var/run/docker.sock:/var/run/docker.sock -v /tmp:/tmp kestra/kestra:latest server local
+# 2. Open http://localhost:8080 and create your user
+# 3. Go to Settings → Secrets and add GEMINI_API_KEY with your API key
+# 4. Go to Flows → Create and paste this YAML, then Save
+# 5. Copy the webhook URL from the Triggers tab
+# 6. Add to .env.local: KESTRA_AGENT_URL=<webhook-url>
+
+id: smart-fridge-recipes
+namespace: ai.smartfridge
+description: AI Agent that generates recipe plans based on fridge inventory using Gemini
+
+inputs:
+  - id: inventory
+    type: STRING
+    displayName: Inventory Items (JSON array)
+    defaults: "[]"
+    description: JSON array of inventory items with name, quantity, and optional expiryDate
+
+  - id: skillLevel
+    type: SELECT
+    displayName: Cooking Skill Level
+    defaults: beginner
+    values:
+      - beginner
+      - intermediate
+      - advanced
+
+  - id: availableTimeMinutes
+    type: INT
+    displayName: Available Cooking Time (minutes)
+    defaults: 30
+
+  - id: dietPreferences
+    type: STRING
+    displayName: Dietary Preferences
+    defaults: ""
+    description: Comma-separated dietary preferences (e.g., "vegetarian, gluten-free")
+
+tasks:
+  - id: generate_recipes
+    type: io.kestra.plugin.gemini.StructuredOutputCompletion
+    apiKey: "{{ secret('GEMINI_API_KEY') }}"
+    model: "gemini-2.5-flash"
+    prompt: |
+      You are a smart fridge recipe assistant.
+
+      User inventory (JSON array of items with name, quantity, and optional expiryDate):
+      {{ inputs.inventory }}
+
+      User cooking profile:
+      - Skill level: {{ inputs.skillLevel }}
+      - Available time in minutes: {{ inputs.availableTimeMinutes }}
+      - Dietary preferences: {{ inputs.dietPreferences or 'none' }}
+
+      TASK:
+      1. Briefly summarize what the user has, highlighting items that are expiring soon.
+      2. Suggest 3-5 recipes the user can cook now using primarily what they already have.
+      3. Produce a shopping list of missing or low-stock ingredients needed to make these recipes great.
+
+      IMPORTANT:
+      - Match recipe difficulty to the user's skill level
+      - Keep recipes within the available time
+      - Respect dietary preferences
+      - Prioritize ingredients expiring soon
+
+      Return a JSON object matching the schema provided.
+    jsonResponseSchema: |
+      {
+        "type": "object",
+        "properties": {
+          "inventorySummary": {
+            "type": "string",
+            "description": "Summary of inventory with expiry warnings"
+          },
+          "recipes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": { "type": "string" },
+                "ingredients": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "steps": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "difficulty": {
+                  "type": "string",
+                  "enum": ["beginner", "intermediate", "advanced"]
+                },
+                "estimatedTimeMinutes": { "type": "integer" }
+              },
+              "required": ["title", "ingredients", "steps", "difficulty", "estimatedTimeMinutes"]
+            }
+          },
+          "shoppingList": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "quantity": { "type": "string" },
+                "reason": { "type": "string" }
+              },
+              "required": ["name"]
+            }
+          }
+        },
+        "required": ["inventorySummary", "recipes", "shoppingList"]
+      }
+
+  - id: output_result
+    type: io.kestra.plugin.core.output.OutputValues
+    values:
+      result: "{{ outputs.generate_recipes.predictions | first }}"
+
+triggers:
+  - id: webhook
+    type: io.kestra.plugin.core.trigger.Webhook
+    key: smartfridge-recipes-secret-key-12345
