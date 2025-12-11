@@ -42,4 +42,23 @@ export interface RecipePlanInput {
   skillLevel: DifficultyLevel;
   availableTimeMinutes: number;
   dietPreferences: string[];
+  allergies?: string[];
+  fridgeImage?: string; // Base64-encoded image or URL
+}
+
+// Response from image analysis (from Kestra agent)
+export interface IdentifiedItem {
+  name: string;
+  quantity: string;
+  unit: string;
+  category: 'produce' | 'dairy' | 'meat' | 'seafood' | 'grains' | 'condiments' | 'beverages' | 'frozen' | 'other';
+  freshness: 'fresh' | 'good' | 'expiring-soon' | 'expired' | 'unknown';
+  confidence: 'high' | 'medium' | 'low';
+}
+
+export interface ImageAnalysisResult {
+  identifiedItems: IdentifiedItem[];
+  summary: string;
+  expiringItems: string[];
+  totalItemsFound: number;
 }

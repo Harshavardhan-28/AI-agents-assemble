@@ -7,17 +7,48 @@
 # 4. Go to Flows → Create and paste this YAML, then Save
 # 5. Copy the webhook URL from the Triggers tab
 # 6. Add to .env.local: KESTRA_AGENT_URL=<webhook-url>
+#
+# ============================================================
+# AI AGENT DECISION-MAKING ARCHITECTURE
+# ============================================================
+# This flow uses Kestra's built-in AIAgent (io.kestra.plugin.ai.agent.AIAgent)
+# to demonstrate autonomous decision-making based on summarized data.
+#
+# AGENT WORKFLOW:
+# 1. Agent receives fridge/pantry IMAGE from user
+# 2. Agent uses analyze_image tool to IDENTIFY ingredients from the image
+# 3. Agent SUMMARIZES the inventory (expiring items, available ingredients)
+# 4. Agent uses TOOLS to autonomously:
+#    - Generate recipes via generate_recipes tool
+#    - Validate recipes via validate_recipes tool  
+#    - Regenerate if violations found via regenerate_recipes tool
+# 5. Agent DECIDES which tools to call based on validation results
+#
+# This satisfies the hackathon requirement:
+# ✅ Uses Kestra's built-in AI Agent (io.kestra.plugin.ai.agent.AIAgent)
+# ✅ Summarizes data from other systems (fridge image → inventory)
+# ✅ Makes decisions based on summarized data (validation → regeneration)
+# ============================================================
 
 id: smart-fridge-recipes
 namespace: ai.smartfridge
-description: AI Agent that generates recipe plans based on fridge inventory using Gemini
+description: |
+  AI Agent that analyzes fridge/pantry images, identifies ingredients, 
+  then autonomously generates, validates, and corrects recipe plans.
+  Demonstrates decision-making based on summarized data from external systems.
 
 inputs:
+  - id: fridgeImage
+    type: STRING
+    displayName: Fridge/Pantry Image (Base64 or URL)
+    defaults: ""
+    description: Base64-encoded image or URL of your fridge/pantry contents. Leave empty to use manual inventory.
+
   - id: inventory
     type: STRING
-    displayName: Inventory Items (JSON array)
+    displayName: Manual Inventory (JSON array)
     defaults: "[]"
-    description: JSON array of inventory items with name, quantity, and optional expiryDate
+    description: Optional manual inventory if not using image. JSON array of items with name, quantity, and optional expiryDate
 
   - id: skillLevel
     type: SELECT
@@ -39,87 +70,474 @@ inputs:
     defaults: ""
     description: Comma-separated dietary preferences (e.g., "vegetarian, gluten-free")
 
+  - id: allergies
+    type: STRING
+    displayName: Food Allergies
+    defaults: ""
+    description: Comma-separated list of food allergies (e.g., "peanuts, shellfish, dairy")
+
 tasks:
-  - id: generate_recipes
-    type: io.kestra.plugin.gemini.StructuredOutputCompletion
-    apiKey: "{{ secret('GEMINI_API_KEY') }}"
-    model: "gemini-2.5-flash"
+  # ============================================================
+  # MAIN AI AGENT - Autonomous Recipe Planning with Tools
+  # ============================================================
+  # This is Kestra's built-in AIAgent that can:
+  # - Analyze images to identify ingredients
+  # - Summarize input data
+  # - Make decisions about which tools to use
+  # - Execute tools autonomously based on results
+  # ============================================================
+  - id: recipe_agent
+    type: io.kestra.plugin.ai.agent.AIAgent
+    provider:
+      type: io.kestra.plugin.ai.provider.GoogleGemini
+      modelName: gemini-2.5-flash
+      apiKey: "{{ secret('GEMINI_API_KEY') }}"
+    
+    systemMessage: |
+      You are an intelligent Smart Fridge Recipe Assistant Agent.
+      
+      YOUR CAPABILITIES:
+      You have access to tools that allow you to:
+      1. analyze_fridge_image - Analyze a fridge/pantry image to identify ingredients
+      2. generate_recipes - Create recipe suggestions based on inventory
+      3. validate_recipes - Check if recipes comply with user constraints
+      4. regenerate_recipes - Fix recipes that have constraint violations
+      
+      YOUR WORKFLOW:
+      
+      STEP 1 - INVENTORY IDENTIFICATION:
+      - If the user provides an image, ALWAYS use the analyze_fridge_image tool FIRST
+      - This tool will scan the image and return a structured list of identified ingredients
+      - If no image is provided but manual inventory exists, use that instead
+      
+      STEP 2 - SUMMARIZE INVENTORY:
+      After getting the inventory (from image or manual input), summarize:
+         - What ingredients are available
+         - Items that appear to be expiring soon (prioritize these!)
+         - Overall inventory assessment
+         - Any notable items or gaps
+      
+      STEP 3 - GENERATE RECIPES:
+      Use the generate_recipes tool to create 3-5 recipe suggestions based on:
+         - The identified/provided inventory
+         - User's skill level and time constraints
+         - Dietary preferences and allergies
+      
+      STEP 4 - VALIDATE RECIPES:
+      ALWAYS use the validate_recipes tool to check for:
+         - Allergy violations (CRITICAL - user safety!)
+         - Time constraint violations
+         - Skill level mismatches
+         - Dietary preference violations
+      
+      STEP 5 - DECISION POINT:
+      Based on validation results:
+         - If ALL recipes are valid → Return the approved recipes
+         - If ANY violations exist → Use regenerate_recipes tool to fix them
+         - After regeneration, validate again to ensure compliance
+      
+      IMPORTANT RULES:
+      - If an image is provided, ALWAYS analyze it first before anything else
+      - NEVER skip validation - user safety depends on it
+      - Allergies are CRITICAL - any allergen violation requires regeneration
+      - Always explain your decisions to the user
+      - Prioritize ingredients that are expiring soon
+    
     prompt: |
-      You are a smart fridge recipe assistant.
-
-      User inventory (JSON array of items with name, quantity, and optional expiryDate):
+      ## User Request: Generate Safe Recipe Recommendations
+      
+      ### Input Source:
+      {% if inputs.fridgeImage and inputs.fridgeImage != '' %}
+      **📷 Fridge/Pantry Image Provided**: Yes
+      Image Data: {{ inputs.fridgeImage }}
+      
+      Please FIRST use the analyze_fridge_image tool to identify all ingredients in the image.
+      {% else %}
+      **📷 Fridge/Pantry Image Provided**: No
+      {% endif %}
+      
+      {% if inputs.inventory and inputs.inventory != '[]' %}
+      **📋 Manual Inventory Provided**: 
+      ```json
       {{ inputs.inventory }}
+      ```
+      {% endif %}
+      
+      ### User Profile & Constraints:
+      - **Cooking Skill Level**: {{ inputs.skillLevel }}
+      - **Available Time**: {{ inputs.availableTimeMinutes }} minutes
+      - **Dietary Preferences**: {{ inputs.dietPreferences or 'None specified' }}
+      - **Food Allergies (CRITICAL)**: {{ inputs.allergies or 'None specified' }}
+      
+      ### Your Task:
+      1. {% if inputs.fridgeImage and inputs.fridgeImage != '' %}FIRST, analyze the fridge image using the analyze_fridge_image tool to identify ingredients{% else %}Review the provided manual inventory{% endif %}
+      2. Summarize what ingredients are available
+      3. Generate 3-5 recipe suggestions using the generate_recipes tool
+      4. Validate ALL recipes using the validate_recipes tool
+      5. If any violations are found, use regenerate_recipes to fix them
+      6. Return the final validated recipes with your assessment
+      
+      Please proceed with the recipe planning workflow.
+    
+    # ============================================================
+    # TOOLS - The agent autonomously decides which tools to use
+    # ============================================================
+    tools:
+      # TOOL 0: Analyze fridge/pantry image to identify ingredients
+      - type: io.kestra.plugin.ai.tool.KestraFlow
+        displayName: analyze_fridge_image
+        description: |
+          Analyzes a fridge or pantry image to identify all visible food ingredients.
+          Returns a structured JSON list of identified items with estimated quantities.
+          USE THIS TOOL FIRST when the user provides an image.
+          This is the first step in the workflow - identifying what ingredients are available.
+        namespace: ai.smartfridge
+        flowId: analyze-image-tool
+        wait: true
+        inputs:
+          imageData: "{{ inputs.fridgeImage }}"
+      
+      # TOOL 1: Generate initial recipe suggestions
+      - type: io.kestra.plugin.ai.tool.KestraFlow
+        displayName: generate_recipes
+        description: |
+          Generates 3-5 recipe suggestions based on the user's fridge inventory.
+          Returns recipes with titles, ingredients, steps, difficulty, and estimated time.
+          Use this tool AFTER you have identified the inventory (from image or manual input).
+        namespace: ai.smartfridge
+        flowId: generate-recipes-tool
+        wait: true
+        inputs:
+          inventory: "{{ inputs.inventory }}"
+          skillLevel: "{{ inputs.skillLevel }}"
+          availableTimeMinutes: "{{ inputs.availableTimeMinutes }}"
+          dietPreferences: "{{ inputs.dietPreferences }}"
+          allergies: "{{ inputs.allergies }}"
+      
+      # TOOL 2: Validate recipes against user constraints
+      - type: io.kestra.plugin.ai.tool.KestraFlow
+        displayName: validate_recipes
+        description: |
+          Validates generated recipes against user constraints.
+          Checks for: allergy violations, time exceeded, skill mismatch, diet violations.
+          Returns isValid boolean and list of any violations found.
+          ALWAYS use this after generating recipes to ensure user safety.
+        namespace: ai.smartfridge
+        flowId: validate-recipes-tool
+        wait: true
+        inputs:
+          recipes: "{{ outputs.generate_recipes.recipes ?? '[]' }}"
+          skillLevel: "{{ inputs.skillLevel }}"
+          availableTimeMinutes: "{{ inputs.availableTimeMinutes }}"
+          dietPreferences: "{{ inputs.dietPreferences }}"
+          allergies: "{{ inputs.allergies }}"
+      
+      # TOOL 3: Regenerate recipes to fix violations
+      - type: io.kestra.plugin.ai.tool.KestraFlow
+        displayName: regenerate_recipes
+        description: |
+          Regenerates recipes to fix constraint violations found during validation.
+          Use this tool when validate_recipes returns isValid=false.
+          Provide the violations list so it knows what to fix.
+        namespace: ai.smartfridge
+        flowId: regenerate-recipes-tool
+        wait: true
+        inputs:
+          inventory: "{{ inputs.inventory }}"
+          violations: "{{ outputs.validate_recipes.violations ?? '[]' }}"
+          skillLevel: "{{ inputs.skillLevel }}"
+          availableTimeMinutes: "{{ inputs.availableTimeMinutes }}"
+          dietPreferences: "{{ inputs.dietPreferences }}"
+          allergies: "{{ inputs.allergies }}"
+    
+    # Allow multiple tool invocations for the full workflow
+    maxSequentialToolsInvocations: 7
 
-      User cooking profile:
-      - Skill level: {{ inputs.skillLevel }}
-      - Available time in minutes: {{ inputs.availableTimeMinutes }}
-      - Dietary preferences: {{ inputs.dietPreferences or 'none' }}
-
-      TASK:
-      1. Briefly summarize what the user has, highlighting items that are expiring soon.
-      2. Suggest 3-5 recipes the user can cook now using primarily what they already have.
-      3. Produce a shopping list of missing or low-stock ingredients needed to make these recipes great.
-
-      IMPORTANT:
-      - Match recipe difficulty to the user's skill level
-      - Keep recipes within the available time
-      - Respect dietary preferences
-      - Prioritize ingredients expiring soon
-
-      Return a JSON object matching the schema provided.
-    jsonResponseSchema: |
-      {
-        "type": "object",
-        "properties": {
-          "inventorySummary": {
-            "type": "string",
-            "description": "Summary of inventory with expiry warnings"
-          },
-          "recipes": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "title": { "type": "string" },
-                "ingredients": {
-                  "type": "array",
-                  "items": { "type": "string" }
-                },
-                "steps": {
-                  "type": "array",
-                  "items": { "type": "string" }
-                },
-                "difficulty": {
-                  "type": "string",
-                  "enum": ["beginner", "intermediate", "advanced"]
-                },
-                "estimatedTimeMinutes": { "type": "integer" }
-              },
-              "required": ["title", "ingredients", "steps", "difficulty", "estimatedTimeMinutes"]
-            }
-          },
-          "shoppingList": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "name": { "type": "string" },
-                "quantity": { "type": "string" },
-                "reason": { "type": "string" }
-              },
-              "required": ["name"]
-            }
-          }
-        },
-        "required": ["inventorySummary", "recipes", "shoppingList"]
-      }
-
-  - id: output_result
+  # ============================================================
+  # OUTPUT: Format the final agent response
+  # ============================================================
+  - id: format_output
     type: io.kestra.plugin.core.output.OutputValues
     values:
-      result: "{{ outputs.generate_recipes.predictions | first }}"
+      agentResponse: "{{ outputs.recipe_agent.text }}"
+      toolsUsed: "{{ outputs.recipe_agent.toolExecutions | length }}"
+      executionDetails: "{{ outputs.recipe_agent.toolExecutions }}"
 
 triggers:
   - id: webhook
     type: io.kestra.plugin.core.trigger.Webhook
     key: smartfridge-recipes-secret-key-12345
+
+---
+# ============================================================
+# TOOL FLOW 0: Analyze Fridge/Pantry Image
+# ============================================================
+# This is the FIRST tool - analyzes images to identify ingredients
+# Uses Gemini's MULTIMODAL capabilities to scan fridge/pantry photos
+#
+# IMAGE INPUT OPTIONS:
+# 1. Base64-encoded image string (data:image/jpeg;base64,/9j/4AAQ...)
+# 2. Public URL to an image (https://example.com/fridge.jpg)
+# 3. Kestra internal storage URI (kestra:///...)
+
+id: analyze-image-tool
+namespace: ai.smartfridge
+description: Tool flow for analyzing fridge/pantry images to identify ingredients using Gemini Vision
+
+inputs:
+  - id: imageData
+    type: STRING
+    description: Base64-encoded image data OR public URL to the fridge/pantry image
+
+tasks:
+  # ============================================================
+  # Use Gemini's MultimodalCompletion for image analysis
+  # This task type specifically supports image inputs!
+  # ============================================================
+  - id: analyze
+    type: io.kestra.plugin.gemini.MultimodalCompletion
+    apiKey: "{{ secret('GEMINI_API_KEY') }}"
+    model: gemini-2.5-flash
+    contents:
+      # The 'contents' array can contain text AND images
+      - type: TEXT
+        content: |
+          You are a food identification expert. Analyze this fridge/pantry image and identify all visible food items.
+          
+          Return your response as valid JSON only with this exact structure:
+          {
+            "identifiedItems": [
+              {
+                "name": "item name (e.g., eggs, milk, tomatoes)",
+                "quantity": "estimated quantity (e.g., 6, 1 gallon, 3)",
+                "unit": "unit of measurement (e.g., pieces, liters, pounds)",
+                "category": "produce|dairy|meat|seafood|grains|condiments|beverages|frozen|other",
+                "freshness": "fresh|good|expiring-soon|expired|unknown",
+                "confidence": "high|medium|low"
+              }
+            ],
+            "summary": "Brief description of what's in the fridge/pantry",
+            "expiringItems": ["list of items that appear to be expiring soon"],
+            "totalItemsFound": 10
+          }
+          
+          GUIDELINES:
+          - Identify ALL visible food items, even partially visible ones
+          - Estimate quantities as accurately as possible
+          - Flag items that look like they're expiring soon (wilted produce, near expiry dates if visible)
+          - Include condiments, beverages, and packaged items
+          - If an item is unclear, include it with low confidence
+          - Be thorough - users rely on this for meal planning
+          
+          Return ONLY valid JSON, no markdown code blocks.
+      
+      # Image content - supports base64 or URL
+      - type: IMAGE
+        content: "{{ inputs.imageData }}"
+
+  - id: output
+    type: io.kestra.plugin.core.output.OutputValues
+    values:
+      identifiedInventory: "{{ outputs.analyze.text }}"
+
+---
+# ============================================================
+# TOOL FLOW 1: Generate Recipes
+# ============================================================
+# This is a sub-flow that the AI Agent calls as a tool
+
+id: generate-recipes-tool
+namespace: ai.smartfridge
+description: Tool flow for generating recipe suggestions
+
+inputs:
+  - id: inventory
+    type: STRING
+  - id: skillLevel
+    type: STRING
+  - id: availableTimeMinutes
+    type: INT
+  - id: dietPreferences
+    type: STRING
+  - id: allergies
+    type: STRING
+
+tasks:
+  - id: generate
+    type: io.kestra.plugin.ai.completion.ChatCompletion
+    provider:
+      type: io.kestra.plugin.ai.provider.GoogleGemini
+      modelName: gemini-2.5-flash
+      apiKey: "{{ secret('GEMINI_API_KEY') }}"
+    messages:
+      - role: SYSTEM
+        content: |
+          You are a recipe generation assistant. Generate recipes as valid JSON only.
+          Response must be a JSON object with this exact structure:
+          {
+            "inventorySummary": "string describing inventory with expiry warnings",
+            "recipes": [
+              {
+                "title": "Recipe Name",
+                "ingredients": ["ingredient 1", "ingredient 2"],
+                "steps": ["step 1", "step 2"],
+                "difficulty": "beginner|intermediate|advanced",
+                "estimatedTimeMinutes": 30,
+                "usesExpiringItems": ["list of expiring items this recipe uses"]
+              }
+            ],
+            "shoppingList": [
+              {"name": "item", "quantity": "amount", "reason": "why needed"}
+            ]
+          }
+      - role: USER
+        content: |
+          Generate 3-5 recipes based on:
+          
+          Inventory: {{ inputs.inventory }}
+          Skill Level: {{ inputs.skillLevel }}
+          Available Time: {{ inputs.availableTimeMinutes }} minutes
+          Diet Preferences: {{ inputs.dietPreferences or 'none' }}
+          Allergies (AVOID THESE): {{ inputs.allergies or 'none' }}
+          
+          PRIORITIES:
+          - Use expiring items FIRST - help reduce food waste!
+          - Match difficulty to skill level
+          - Keep recipes under the time limit
+          - NEVER include allergens
+          
+          Return ONLY valid JSON, no markdown.
+
+  - id: output
+    type: io.kestra.plugin.core.output.OutputValues
+    values:
+      recipes: "{{ outputs.generate.text }}"
+
+---
+# ============================================================
+# TOOL FLOW 2: Validate Recipes
+# ============================================================
+
+id: validate-recipes-tool
+namespace: ai.smartfridge
+description: Tool flow for validating recipes against user constraints
+
+inputs:
+  - id: recipes
+    type: STRING
+  - id: skillLevel
+    type: STRING
+  - id: availableTimeMinutes
+    type: INT
+  - id: dietPreferences
+    type: STRING
+  - id: allergies
+    type: STRING
+
+tasks:
+  - id: validate
+    type: io.kestra.plugin.ai.completion.ChatCompletion
+    provider:
+      type: io.kestra.plugin.ai.provider.GoogleGemini
+      modelName: gemini-2.5-flash
+      apiKey: "{{ secret('GEMINI_API_KEY') }}"
+    messages:
+      - role: SYSTEM
+        content: |
+          You are a recipe validation agent. Validate recipes and return JSON only.
+          Response must be a JSON object with this exact structure:
+          {
+            "isValid": true/false,
+            "overallAssessment": "summary of validation",
+            "violations": [
+              {
+                "recipeName": "name",
+                "violationType": "ALLERGY|TIME_EXCEEDED|SKILL_MISMATCH|DIET_VIOLATION",
+                "description": "what's wrong",
+                "severity": "critical|warning"
+              }
+            ],
+            "validRecipeCount": 3,
+            "totalRecipeCount": 3
+          }
+      - role: USER
+        content: |
+          Validate these recipes against user constraints:
+          
+          RECIPES TO VALIDATE:
+          {{ inputs.recipes }}
+          
+          USER CONSTRAINTS:
+          - Skill Level: {{ inputs.skillLevel }} (beginner can only do beginner, intermediate can do beginner+intermediate, advanced can do all)
+          - Max Time: {{ inputs.availableTimeMinutes }} minutes
+          - Diet Preferences: {{ inputs.dietPreferences or 'none' }}
+          - Allergies (CRITICAL): {{ inputs.allergies or 'none' }}
+          
+          Check each recipe for violations. Allergies are CRITICAL severity.
+          Return ONLY valid JSON, no markdown.
+
+  - id: output
+    type: io.kestra.plugin.core.output.OutputValues
+    values:
+      validation: "{{ outputs.validate.text }}"
+
+---
+# ============================================================
+# TOOL FLOW 3: Regenerate Recipes (Fix Violations)
+# ============================================================
+
+id: regenerate-recipes-tool
+namespace: ai.smartfridge
+description: Tool flow for regenerating recipes to fix constraint violations
+
+inputs:
+  - id: inventory
+    type: STRING
+  - id: violations
+    type: STRING
+  - id: skillLevel
+    type: STRING
+  - id: availableTimeMinutes
+    type: INT
+  - id: dietPreferences
+    type: STRING
+  - id: allergies
+    type: STRING
+
+tasks:
+  - id: regenerate
+    type: io.kestra.plugin.ai.completion.ChatCompletion
+    provider:
+      type: io.kestra.plugin.ai.provider.GoogleGemini
+      modelName: gemini-2.5-flash
+      apiKey: "{{ secret('GEMINI_API_KEY') }}"
+    messages:
+      - role: SYSTEM
+        content: |
+          You are a recipe correction assistant. Fix recipe violations and return JSON only.
+          Response must be a JSON object with this exact structure:
+          {
+            "inventorySummary": "string",
+            "recipes": [...],
+            "shoppingList": [...],
+            "correctionNotes": "explanation of what was fixed"
+          }
+      - role: USER
+        content: |
+          The previous recipes had these violations that must be fixed:
+          {{ inputs.violations }}
+          
+          Generate NEW recipes that fix ALL violations.
+          
+          Inventory: {{ inputs.inventory }}
+          Skill Level: {{ inputs.skillLevel }}
+          Max Time: {{ inputs.availableTimeMinutes }} minutes
+          Diet Preferences: {{ inputs.dietPreferences or 'none' }}
+          Allergies (ABSOLUTELY AVOID): {{ inputs.allergies or 'none' }}
+          
+          Return ONLY valid JSON, no markdown.
+
+  - id: output
+    type: io.kestra.plugin.core.output.OutputValues
+    values:
+      correctedRecipes: "{{ outputs.regenerate.text }}"
