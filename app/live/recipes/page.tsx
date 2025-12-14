@@ -55,14 +55,12 @@ export default function RecipesPage() {
 
   // Watch for recipe changes to detect when Kestra finishes
   useEffect(() => {
-    if (isProcessing('recipes') && data?.recipes) {
-      const currentRecipes = JSON.stringify(data.recipes);
-      if (previousRecipesRef.current !== null && previousRecipesRef.current !== currentRecipes) {
+    if (isProcessing('recipes') && previousRecipesRef.current !== null) {
+      const currentRecipes = JSON.stringify(data?.recipes || {});
+      if (previousRecipesRef.current !== currentRecipes) {
         stopProcessing();
+        previousRecipesRef.current = null;
       }
-      previousRecipesRef.current = currentRecipes;
-    } else if (!isProcessing('recipes') && data?.recipes) {
-      previousRecipesRef.current = JSON.stringify(data.recipes);
     }
   }, [data?.recipes, isProcessing, stopProcessing]);
 
@@ -79,10 +77,11 @@ export default function RecipesPage() {
 
   // Watch for shopping list changes
   useEffect(() => {
-    if (isProcessing('shopping') && data?.shopping_list) {
-      const currentShopping = JSON.stringify(data.shopping_list);
-      if (previousShoppingRef.current !== null && previousShoppingRef.current !== currentShopping) {
+    if (isProcessing('shopping') && previousShoppingRef.current !== null) {
+      const currentShopping = JSON.stringify(data?.shopping_list || []);
+      if (previousShoppingRef.current !== currentShopping) {
         stopProcessing();
+        previousShoppingRef.current = null;
         // Open shopping page if we were generating for a specific recipe
         if (generatingShoppingFor !== null) {
           const recipesList = data?.recipes?.recipes || [];
@@ -93,14 +92,14 @@ export default function RecipesPage() {
           setGeneratingShoppingFor(null);
         }
       }
-      previousShoppingRef.current = currentShopping;
-    } else if (!isProcessing('shopping') && data?.shopping_list) {
-      previousShoppingRef.current = JSON.stringify(data.shopping_list);
     }
-  }, [data?.shopping_list, isProcessing, stopProcessing, generatingShoppingFor]);
+  }, [data?.shopping_list, data?.recipes?.recipes, isProcessing, stopProcessing, generatingShoppingFor]);
 
   const handleGenerate = async () => {
     if (!user || isProcessing()) return;
+    
+    // Capture current recipes state BEFORE starting processing
+    previousRecipesRef.current = JSON.stringify(data?.recipes || {});
     
     startProcessing('recipes', 'Our AI chef is cooking up personalized recipes for you...');
 
@@ -130,6 +129,9 @@ export default function RecipesPage() {
   const handleGenerateShoppingList = async (recipe: Recipe, index: number) => {
     if (!user || isProcessing()) return;
     setGeneratingShoppingFor(index);
+    
+    // Capture current shopping list state BEFORE starting processing
+    previousShoppingRef.current = JSON.stringify(data?.shopping_list || []);
     
     startProcessing('shopping', `Creating shopping list for "${recipe.title}"...`);
 

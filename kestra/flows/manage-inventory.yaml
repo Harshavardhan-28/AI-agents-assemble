@@ -1,24 +1,25 @@
-# =============================================================================
-# FLOW 1: INVENTORY MANAGER
-# Role: Ingests image/text, uses AI Agent to extract/summarize ingredients,
-#       and saves them to Firebase Realtime Database.
-# 
-# WAKANDA DATA AWARD: Agent summarizes visual data (Image) and text 
-#                     into structured inventory format.
-# =============================================================================
 id: manage-inventory
 namespace: ai.smartfridge
-description: "Step 1: Ingests image/text, creates structured inventory, saves to Firebase."
+description: "Accepts fridge image as URL or base64, normalizes to a Kestra file, extracts items via Gemini vision, formats JSON via AI Agent, then saves to Firebase."
 
 inputs:
   - id: userId
     type: STRING
     displayName: User ID
     defaults: "user_001"
+
+  # IMPORTANT: this can be either an https:// URL OR a base64 string OR a data URI.
   - id: fridgeImage
     type: STRING
-    displayName: Fridge Image (Base64/URL)
+    displayName: Fridge Image (URL or Base64 or data URI)
     defaults: ""
+
+  # Only needed when fridgeImage is RAW base64 (not a data URI like data:image/jpeg;base64,...)
+  - id: fridgeImageMimeType
+    type: STRING
+    displayName: Image mimeType (used for raw base64)
+    defaults: "image/jpeg"
+
   - id: manualInventory
     type: STRING
     displayName: Manual Items (comma-separated or JSON)
@@ -26,7 +27,70 @@ inputs:
 
 tasks:
   # ====================================================
-  # WAKANDA GOAL: AI Agent Summarizes Input Data
+  # STEP 0: NORMALIZE IMAGE INTO KESTRA INTERNAL STORAGE
+  # ====================================================
+  - id: prepare_image
+    type: io.kestra.plugin.scripts.python.Script
+    dependencies:
+      - requests
+      - kestra
+    outputFiles:
+      - "fridge_image"
+    script: |
+      import base64
+      import requests
+      from kestra import Kestra
+
+      raw = """{{ inputs.fridgeImage }}""".strip()
+      fallback_mime = """{{ inputs.fridgeImageMimeType }}""".strip() or "image/jpeg"
+
+      if not raw:
+          raise Exception("inputs.fridgeImage is empty. Provide an https:// URL, base64, or data URI.")
+
+      mime = fallback_mime
+      content_bytes = None
+
+      # Case 1: public URL
+      if raw.startswith("http://") or raw.startswith("https://"):
+          r = requests.get(raw, timeout=60)
+          r.raise_for_status()
+          # prefer server-provided content-type if available
+          mime = (r.headers.get("content-type") or fallback_mime).split(";")[0].strip()
+          content_bytes = r.content
+
+      # Case 2: data URI: data:image/jpeg;base64,XXXX
+      elif raw.startswith("data:"):
+          header, b64 = raw.split(",", 1)
+          # header like: data:image/jpeg;base64
+          mime = header.split(";")[0].replace("data:", "").strip() or fallback_mime
+          content_bytes = base64.b64decode(b64)
+
+      # Case 3: raw base64 only
+      else:
+          content_bytes = base64.b64decode(raw)
+
+      with open("fridge_image", "wb") as f:
+          f.write(content_bytes)
+
+      Kestra.outputs({"mimeType": mime})
+
+  # ====================================================
+  # STEP 1: VISION ANALYSIS
+  # ====================================================
+  - id: analyze_vision
+    type: io.kestra.plugin.gemini.MultimodalCompletion
+    apiKey: "{{ secret('GEMINI_API_KEY') }}"
+    model: gemini-2.5-flash
+    contents:
+      - content: |
+          Analyze this image. List every single food item you see.
+          Be specific about quantity (e.g. "1 bunch", "2 cartons").
+          Do not use markdown or json here, just a plain text list.
+      - content: "{{ outputs.prepare_image.outputFiles['fridge_image'] }}"
+        mimeType: "{{ outputs.prepare_image.vars.mimeType ?? inputs.fridgeImageMimeType ?? 'image/jpeg' }}"
+
+  # ====================================================
+  # STEP 2: AI AGENT SUMMARIZATION (STRICT JSON)
   # ====================================================
   - id: inventory_agent
     type: io.kestra.plugin.ai.agent.AIAgent
@@ -35,48 +99,25 @@ tasks:
       modelName: gemini-2.5-flash
       apiKey: "{{ secret('GEMINI_API_KEY') }}"
     systemMessage: |
-      You are an Inventory Manager AI Agent.
-      
-      Your job is to:
-      1. If an image is provided, call the 'analyze_image' tool to extract food items.
-      2. Combine image results with any manual text input.
-      3. Deduplicate and normalize item names (lowercase, singular form).
-      
-      OUTPUT FORMAT: A strict JSON array of objects. Each object has:
-      - name: string (item name)
-      - quantity: string (estimated quantity like "1", "2 lbs", "half gallon")
-      - category: string (one of: dairy, produce, meat, pantry, frozen, beverages, other)
-      
-      Example: [{"name": "milk", "quantity": "1 gallon", "category": "dairy"}, {"name": "eggs", "quantity": "12", "category": "dairy"}]
-      
-      Return ONLY the JSON array, no markdown formatting.
+      You are an Inventory Manager AI.
+      Convert raw food descriptions into a strict JSON array.
+      Rules:
+      1. Deduplicate items.
+      2. Normalize names (lowercase, singular).
+      3. Assign categories: [dairy, produce, meat, pantry, frozen, beverages, other].
+      4. Output ONLY JSON array (no markdown).
     prompt: |
-      Process the following inputs and create a unified inventory:
-      
-      Image Provided: {{ inputs.fridgeImage != '' }}
-      Manual Input: {{ inputs.manualInventory }}
-      
-      If an image is provided, analyze it first using the tool.
-    tools:
-      - type: io.kestra.plugin.ai.tool.KestraTask
-        tasks:
-          - id: analyze_image
-            type: io.kestra.plugin.gemini.MultimodalCompletion
-            apiKey: "{{ secret('GEMINI_API_KEY') }}"
-            model: gemini-2.5-flash
-            contents:
-              - role: USER
-                content: |
-                  Analyze this fridge/pantry image carefully. 
-                  List EVERY food item you can identify with estimated quantities.
-                  Format: "item name (quantity)" - one per line.
-                  Be thorough - check all shelves, drawers, and door compartments.
-              - role: USER
-                content: "{{ inputs.fridgeImage }}"
+      Vision raw text:
+      "{{ outputs.analyze_vision.text }}"
+
+      Manual input:
+      "{{ inputs.manualInventory }}"
+
+      Return ONLY a JSON array like:
+      [{"name":"...", "quantity":"...", "category":"..."}]
 
   # ====================================================
-  # PERSISTENCE: Save to Firebase via Next.js API
-  # (Uses Firebase Admin SDK which has proper auth)
+  # STEP 3: SAVE TO FIREBASE (YOUR API)
   # ====================================================
   - id: save_inventory_firebase
     type: io.kestra.plugin.core.http.Request
@@ -86,10 +127,10 @@ tasks:
     body: "{{ {'userId': inputs.userId, 'inventory': outputs.inventory_agent.textOutput} | json }}"
 
 outputs:
-  - id: currentInventory
+  - id: visionRawText
     type: STRING
-    value: "{{ outputs.inventory_agent.textOutput }}"
-  - id: itemCount
+    value: "{{ outputs.analyze_vision.text }}"
+  - id: finalJson
     type: STRING
     value: "{{ outputs.inventory_agent.textOutput }}"
 
@@ -100,4 +141,5 @@ triggers:
     inputs:
       userId: "{{ trigger.body.userId ?? 'user_001' }}"
       fridgeImage: "{{ trigger.body.fridgeImage ?? '' }}"
+      fridgeImageMimeType: "{{ trigger.body.fridgeImageMimeType ?? 'image/jpeg' }}"
       manualInventory: "{{ trigger.body.manualInventory ?? '' }}"

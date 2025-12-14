@@ -62,19 +62,20 @@ export default function ShoppingPage() {
 
   // Watch for shopping list changes to detect when Kestra finishes
   useEffect(() => {
-    if (isProcessing('shopping') && data?.shopping_list) {
-      const currentShopping = JSON.stringify(data.shopping_list);
-      if (previousShoppingRef.current !== null && previousShoppingRef.current !== currentShopping) {
+    if (isProcessing('shopping') && previousShoppingRef.current !== null) {
+      const currentShopping = JSON.stringify(data?.shopping_list || []);
+      if (previousShoppingRef.current !== currentShopping) {
         stopProcessing();
+        previousShoppingRef.current = null;
       }
-      previousShoppingRef.current = currentShopping;
-    } else if (!isProcessing('shopping') && data?.shopping_list) {
-      previousShoppingRef.current = JSON.stringify(data.shopping_list);
     }
   }, [data?.shopping_list, isProcessing, stopProcessing]);
 
   const handleGenerate = async () => {
     if (!user || isProcessing()) return;
+    
+    // Capture current shopping list state BEFORE starting processing
+    previousShoppingRef.current = JSON.stringify(data?.shopping_list || []);
     
     startProcessing('shopping', 'Comparing your inventory with recipe ingredients...');
 
