@@ -1,9 +1,10 @@
 export type DifficultyLevel = 'beginner' | 'intermediate' | 'advanced';
 
 export interface InventoryItem {
-  id: string;
+  id?: string;
   name: string;
   quantity: string;
+  category?: string;
   expiryDate?: string; // ISO string
 }
 

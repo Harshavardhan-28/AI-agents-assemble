@@ -22,16 +22,16 @@ inputs:
 
 tasks:
   # ====================================================
-  # FETCH: Get Data from Both Systems
+  # FETCH: Get Data from Both Systems via Next.js API
   # ====================================================
   - id: fetch_inventory
     type: io.kestra.plugin.core.http.Request
-    uri: "{{ secret('FIREBASE_DB_URL') }}/users/{{ inputs.userId }}/inventory.json"
+    uri: "http://host.docker.internal:3000/api/firebase/inventory?userId={{ inputs.userId }}"
     method: GET
 
   - id: fetch_recipes
     type: io.kestra.plugin.core.http.Request
-    uri: "{{ secret('FIREBASE_DB_URL') }}/users/{{ inputs.userId }}/recipes.json"
+    uri: "http://host.docker.internal:3000/api/firebase/recipes?userId={{ inputs.userId }}"
     method: GET
 
   # ====================================================
@@ -94,14 +94,14 @@ tasks:
       Compare the recipe requirements against inventory and identify what needs to be purchased.
 
   # ====================================================
-  # PERSISTENCE: Save Shopping List to Firebase
+  # PERSISTENCE: Save Shopping List to Firebase via Next.js API
   # ====================================================
   - id: save_shopping_list
     type: io.kestra.plugin.core.http.Request
-    method: PUT
-    uri: "{{ secret('FIREBASE_DB_URL') }}/users/{{ inputs.userId }}/shopping_list.json"
+    method: POST
+    uri: "http://host.docker.internal:3000/api/firebase/shopping"
     contentType: application/json
-    body: "{{ outputs.shopping_agent.textOutput }}"
+    body: "{{ {'userId': inputs.userId, 'shoppingList': outputs.shopping_agent.textOutput} | json }}"
 
 outputs:
   - id: shoppingList

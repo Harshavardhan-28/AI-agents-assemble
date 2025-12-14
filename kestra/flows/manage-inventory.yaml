@@ -75,14 +75,15 @@ tasks:
                 content: "{{ inputs.fridgeImage }}"
 
   # ====================================================
-  # PERSISTENCE: Save to Firebase Realtime Database
+  # PERSISTENCE: Save to Firebase via Next.js API
+  # (Uses Firebase Admin SDK which has proper auth)
   # ====================================================
   - id: save_inventory_firebase
     type: io.kestra.plugin.core.http.Request
-    method: PUT
-    uri: "{{ secret('FIREBASE_DB_URL') }}/users/{{ inputs.userId }}/inventory.json"
+    method: POST
+    uri: "http://host.docker.internal:3000/api/firebase/inventory"
     contentType: application/json
-    body: "{{ outputs.inventory_agent.textOutput }}"
+    body: "{{ {'userId': inputs.userId, 'inventory': outputs.inventory_agent.textOutput} | json }}"
 
 outputs:
   - id: currentInventory

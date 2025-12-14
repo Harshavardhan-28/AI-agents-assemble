@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useFirebaseRealtime } from '@/lib/hooks/useFirebaseRealtime';
-import { triggerSmartFridgePipeline, fileToBase64 } from '@/lib/kestraService';
+import { fileToBase64 } from '@/lib/kestraService';
 import InventoryDisplay from './InventoryDisplay';
 import RecipeCards from './RecipeCards';
 import ShoppingListPanel from './ShoppingListPanel';
@@ -55,14 +55,23 @@ export default function LiveDashboard({ userId }: LiveDashboardProps) {
 
       setProcessingStep('🤖 Chef AI is scanning your ingredients...');
       
-      await triggerSmartFridgePipeline({
-        userId,
-        fridgeImage: fridgeImageBase64,
-        skillLevel: preferences.skillLevel,
-        availableTime: preferences.availableTime,
-        dietaryRestriction: preferences.dietaryRestriction,
-        allergies: preferences.allergies
+      // Call Next.js API route (server-side) to avoid CORS
+      const response = await fetch('/api/kestra/main', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          fridgeImage: fridgeImageBase64,
+          skillLevel: preferences.skillLevel,
+          availableTime: preferences.availableTime,
+          dietaryRestriction: preferences.dietaryRestriction,
+          allergies: preferences.allergies
+        })
       });
+
+      if (!response.ok) {
+        throw new Error('Failed to trigger pipeline');
+      }
 
       // Pipeline triggered - results will come via Firebase real-time listeners
       setProcessingStep('✨ AI is generating your personalized meal plan...');

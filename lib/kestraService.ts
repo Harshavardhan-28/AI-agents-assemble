@@ -42,7 +42,7 @@ export interface KestraResponse {
  * This is the primary entry point that runs all subflows
  */
 export async function triggerSmartFridgePipeline(inputs: KestraInputs): Promise<KestraResponse> {
-  const url = `${KESTRA_BASE_URL}/api/v1/executions/webhook/${KESTRA_NAMESPACE}/smart-fridge-main/${WEBHOOK_KEYS.main}`;
+  const url = `${KESTRA_BASE_URL}/api/v1/main/executions/webhook/${KESTRA_NAMESPACE}/smart-fridge-main/${WEBHOOK_KEYS.main}`;
   
   console.log('[Kestra] Triggering main pipeline:', { userId: inputs.userId, hasImage: !!inputs.fridgeImage });
   
@@ -84,7 +84,7 @@ export async function triggerInventoryFlow(
   fridgeImage?: string, 
   manualInventory?: string
 ): Promise<KestraResponse> {
-  const url = `${KESTRA_BASE_URL}/api/v1/executions/webhook/${KESTRA_NAMESPACE}/manage-inventory/${WEBHOOK_KEYS.inventory}`;
+  const url = `${KESTRA_BASE_URL}/api/v1/main/executions/webhook/${KESTRA_NAMESPACE}/manage-inventory/${WEBHOOK_KEYS.inventory}`;
   
   const response = await fetch(url, {
     method: 'POST',
@@ -113,7 +113,7 @@ export async function triggerRecipeFlow(
   dietaryRestriction: string,
   allergies: string
 ): Promise<KestraResponse> {
-  const url = `${KESTRA_BASE_URL}/api/v1/executions/webhook/${KESTRA_NAMESPACE}/generate-recipes/${WEBHOOK_KEYS.recipes}`;
+  const url = `${KESTRA_BASE_URL}/api/v1/main/executions/webhook/${KESTRA_NAMESPACE}/generate-recipes/${WEBHOOK_KEYS.recipes}`;
   
   const response = await fetch(url, {
     method: 'POST',
@@ -141,7 +141,7 @@ export async function triggerShoppingListFlow(
   userId: string,
   recipeFilter?: string
 ): Promise<KestraResponse> {
-  const url = `${KESTRA_BASE_URL}/api/v1/executions/webhook/${KESTRA_NAMESPACE}/create-shopping-list/${WEBHOOK_KEYS.shopping}`;
+  const url = `${KESTRA_BASE_URL}/api/v1/main/executions/webhook/${KESTRA_NAMESPACE}/create-shopping-list/${WEBHOOK_KEYS.shopping}`;
   
   const response = await fetch(url, {
     method: 'POST',
@@ -183,7 +183,7 @@ export async function pollExecutionStatus(executionId: string): Promise<{
   state: string;
   outputs?: Record<string, unknown>;
 }> {
-  const url = `${KESTRA_BASE_URL}/api/v1/executions/${executionId}`;
+  const url = `${KESTRA_BASE_URL}/api/v1/main/executions/${executionId}`;
   
   const response = await fetch(url);
   if (!response.ok) {

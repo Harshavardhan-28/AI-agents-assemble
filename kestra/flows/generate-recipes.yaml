@@ -36,11 +36,11 @@ inputs:
 
 tasks:
   # ====================================================
-  # FETCH: Get Inventory from Firebase
+  # FETCH: Get Inventory from Firebase via Next.js API
   # ====================================================
   - id: fetch_inventory
     type: io.kestra.plugin.core.http.Request
-    uri: "{{ secret('FIREBASE_DB_URL') }}/users/{{ inputs.userId }}/inventory.json"
+    uri: "http://host.docker.internal:3000/api/firebase/inventory?userId={{ inputs.userId }}"
     method: GET
 
   # ====================================================
@@ -149,14 +149,14 @@ tasks:
               Fix the issues and regenerate safe recipes.
 
   # ====================================================
-  # PERSISTENCE: Save Recipes to Firebase
+  # PERSISTENCE: Save Recipes to Firebase via Next.js API
   # ====================================================
   - id: save_recipes_firebase
     type: io.kestra.plugin.core.http.Request
-    method: PUT
-    uri: "{{ secret('FIREBASE_DB_URL') }}/users/{{ inputs.userId }}/recipes.json"
+    method: POST
+    uri: "http://host.docker.internal:3000/api/firebase/recipes"
     contentType: application/json
-    body: "{{ outputs.regenerate_recipes.textOutput is defined ? outputs.regenerate_recipes.textOutput : outputs.recipe_agent.textOutput }}"
+    body: "{{ {'userId': inputs.userId, 'recipes': (outputs.regenerate_recipes.textOutput is defined ? outputs.regenerate_recipes.textOutput : outputs.recipe_agent.textOutput)} | json }}"
 
   # ====================================================
   # FINAL OUTPUT

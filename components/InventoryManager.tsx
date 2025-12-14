@@ -167,7 +167,7 @@ export function InventoryManager({ uid }: InventoryManagerProps) {
                   <motion.button
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
-                    onClick={() => deleteItem(item.id)}
+                    onClick={() => item.id && deleteItem(item.id)}
                     className="w-8 h-8 flex items-center justify-center rounded-md bg-coral-500/10 text-coral-400 hover:bg-coral-500/20 transition-colors"
                   >
                     ✕
