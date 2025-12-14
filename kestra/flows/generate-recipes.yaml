@@ -1,0 +1,184 @@
+# =============================================================================
+# FLOW 2: RECIPE GENERATOR
+# Role: Fetches Inventory from Firebase, generates recipes based on constraints,
+#       validates them, and saves to Firebase.
+#
+# WAKANDA DATA AWARD: Agent summarizes database state and generates content
+#                     based on user constraints.
+# =============================================================================
+id: generate-recipes
+namespace: ai.smartfridge
+description: "Step 2: Fetches Inventory from DB, generates recipes, validates, saves to DB."
+
+inputs:
+  - id: userId
+    type: STRING
+    displayName: User ID
+    defaults: "user_001"
+  - id: skillLevel
+    type: SELECT
+    displayName: Cooking Skill Level
+    values: ["beginner", "intermediate", "advanced"]
+    defaults: "beginner"
+  - id: availableTime
+    type: INT
+    displayName: Available Time (minutes)
+    defaults: 30
+  - id: dietaryRestriction
+    type: SELECT
+    displayName: Dietary Restriction
+    values: ["None", "Vegetarian", "Vegan", "Pescatarian", "Keto", "Paleo", "Gluten-Free", "Halal"]
+    defaults: "None"
+  - id: allergies
+    type: STRING
+    displayName: Allergies (comma-separated)
+    defaults: "None"
+
+tasks:
+  # ====================================================
+  # FETCH: Get Inventory from Firebase
+  # ====================================================
+  - id: fetch_inventory
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ secret('FIREBASE_DB_URL') }}/users/{{ inputs.userId }}/inventory.json"
+    method: GET
+
+  # ====================================================
+  # WAKANDA GOAL: AI Agent Summarizes Data & Generates Recipes
+  # ====================================================
+  - id: recipe_agent
+    type: io.kestra.plugin.ai.agent.AIAgent
+    provider:
+      type: io.kestra.plugin.ai.provider.GoogleGemini
+      modelName: gemini-2.5-flash
+      apiKey: "{{ secret('GEMINI_API_KEY') }}"
+    systemMessage: |
+      You are a professional Chef AI Agent.
+      
+      Your job is to:
+      1. Analyze the provided inventory from the database.
+      2. Generate 3 creative, delicious recipes using available ingredients.
+      3. Ensure recipes match the user's skill level, time constraints, and dietary needs.
+      4. Identify any ingredients needed that aren't in inventory (for shopping list).
+      
+      OUTPUT FORMAT: JSON object (NO markdown):
+      {
+        "recipes": [
+          {
+            "title": "Recipe Name",
+            "difficulty": "easy|medium|hard",
+            "estimatedTimeMinutes": 25,
+            "servings": 4,
+            "ingredients": ["ingredient 1", "ingredient 2"],
+            "ingredientsFromInventory": ["item1", "item2"],
+            "ingredientsNeeded": ["item3"],
+            "steps": ["Step 1...", "Step 2..."],
+            "nutritionEstimate": { "calories": 350, "protein": "20g" }
+          }
+        ],
+        "inventorySummary": "Brief summary of available ingredients",
+        "shoppingList": [
+          { "name": "item", "quantity": "amount", "forRecipe": "Recipe Name" }
+        ]
+      }
+    prompt: |
+      Generate recipes based on the following:
+      
+      CURRENT INVENTORY FROM DATABASE:
+      {{ outputs.fetch_inventory.body }}
+      
+      USER CONSTRAINTS:
+      - Skill Level: {{ inputs.skillLevel }}
+      - Available Time: {{ inputs.availableTime }} minutes
+      - Dietary Restriction: {{ inputs.dietaryRestriction }}
+      - Allergies to AVOID: {{ inputs.allergies }}
+      
+      Create 3 recipes that maximize use of available inventory while respecting all constraints.
+
+  # ====================================================
+  # VALIDATION: AI Agent validates the recipes
+  # ====================================================
+  - id: validate_recipes
+    type: io.kestra.plugin.ai.completion.ChatCompletion
+    provider:
+      type: io.kestra.plugin.ai.provider.GoogleGemini
+      modelName: gemini-2.5-flash
+      apiKey: "{{ secret('GEMINI_API_KEY') }}"
+    messages:
+      - type: SYSTEM
+        content: |
+          You are a Recipe Validator. Check if recipes violate any constraints.
+          Return JSON ONLY: {"isValid": true/false, "violations": ["issue1", "issue2"]}
+      - type: USER
+        content: |
+          Validate these recipes:
+          {{ outputs.recipe_agent.textOutput }}
+          
+          Against constraints:
+          - Diet: {{ inputs.dietaryRestriction }}
+          - Time limit: {{ inputs.availableTime }} minutes
+          - Allergies: {{ inputs.allergies }}
+
+  # ====================================================
+  # DECISION: Regenerate if validation fails
+  # ====================================================
+  - id: check_validation
+    type: io.kestra.plugin.core.flow.If
+    condition: "{{ outputs.validate_recipes.textOutput contains '\"isValid\": false' or outputs.validate_recipes.textOutput contains '\"isValid\":false' }}"
+    then:
+      - id: regenerate_recipes
+        type: io.kestra.plugin.ai.completion.ChatCompletion
+        provider:
+          type: io.kestra.plugin.ai.provider.GoogleGemini
+          modelName: gemini-2.5-flash
+          apiKey: "{{ secret('GEMINI_API_KEY') }}"
+        messages:
+          - type: SYSTEM
+            content: "Fix the recipe violations. Return the corrected JSON in the same format."
+          - type: USER
+            content: |
+              VIOLATIONS FOUND:
+              {{ outputs.validate_recipes.textOutput }}
+              
+              ORIGINAL RECIPES:
+              {{ outputs.recipe_agent.textOutput }}
+              
+              INVENTORY:
+              {{ outputs.fetch_inventory.body }}
+              
+              Fix the issues and regenerate safe recipes.
+
+  # ====================================================
+  # PERSISTENCE: Save Recipes to Firebase
+  # ====================================================
+  - id: save_recipes_firebase
+    type: io.kestra.plugin.core.http.Request
+    method: PUT
+    uri: "{{ secret('FIREBASE_DB_URL') }}/users/{{ inputs.userId }}/recipes.json"
+    contentType: application/json
+    body: "{{ outputs.regenerate_recipes.textOutput is defined ? outputs.regenerate_recipes.textOutput : outputs.recipe_agent.textOutput }}"
+
+  # ====================================================
+  # FINAL OUTPUT
+  # ====================================================
+  - id: final_output
+    type: io.kestra.plugin.core.output.OutputValues
+    values:
+      recipes: "{{ outputs.regenerate_recipes.textOutput is defined ? outputs.regenerate_recipes.textOutput : outputs.recipe_agent.textOutput }}"
+      validationResult: "{{ outputs.validate_recipes.textOutput }}"
+
+outputs:
+  - id: generatedRecipes
+    type: STRING
+    value: "{{ outputs.final_output.values.recipes }}"
+
+triggers:
+  - id: webhook
+    type: io.kestra.plugin.core.trigger.Webhook
+    key: recipe-generator-webhook-key-12345
+    inputs:
+      userId: "{{ trigger.body.userId ?? 'user_001' }}"
+      skillLevel: "{{ trigger.body.skillLevel ?? 'beginner' }}"
+      availableTime: "{{ trigger.body.availableTime ?? 30 }}"
+      dietaryRestriction: "{{ trigger.body.dietaryRestriction ?? 'None' }}"
+      allergies: "{{ trigger.body.allergies ?? 'None' }}"

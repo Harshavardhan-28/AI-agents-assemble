@@ -46,3 +46,10 @@ export function getFirebaseDatabase(): Database {
   }
   return db;
 }
+
+// Export initialized instances for direct use
+export { db };
+
+// Initialize on first import
+getFirebaseApp();
+getFirebaseDatabase();

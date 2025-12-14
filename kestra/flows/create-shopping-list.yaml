@@ -1,0 +1,117 @@
+# =============================================================================
+# FLOW 3: SHOPPING LIST MANAGER
+# Role: The Decision Hub. Fetches BOTH Inventory and Recipes from Firebase,
+#       compares them, and generates a shopping list for missing items.
+#
+# WAKANDA DATA AWARD: Cross-system reasoning - Agent fetches data from two
+#                     different sources and makes decisions based on the gap.
+# =============================================================================
+id: create-shopping-list
+namespace: ai.smartfridge
+description: "Step 3: Compares Recipes vs Inventory to create a Smart Shopping List."
+
+inputs:
+  - id: userId
+    type: STRING
+    displayName: User ID
+    defaults: "user_001"
+  - id: recipeFilter
+    type: STRING
+    displayName: Recipe Filter (optional - specific recipe name)
+    defaults: ""
+
+tasks:
+  # ====================================================
+  # FETCH: Get Data from Both Systems
+  # ====================================================
+  - id: fetch_inventory
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ secret('FIREBASE_DB_URL') }}/users/{{ inputs.userId }}/inventory.json"
+    method: GET
+
+  - id: fetch_recipes
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ secret('FIREBASE_DB_URL') }}/users/{{ inputs.userId }}/recipes.json"
+    method: GET
+
+  # ====================================================
+  # WAKANDA GOAL: Decision Making Based on Data Summaries
+  # The Agent compares two data sources and decides what's missing
+  # ====================================================
+  - id: shopping_agent
+    type: io.kestra.plugin.ai.agent.AIAgent
+    provider:
+      type: io.kestra.plugin.ai.provider.GoogleGemini
+      modelName: gemini-2.5-flash
+      apiKey: "{{ secret('GEMINI_API_KEY') }}"
+    systemMessage: |
+      You are a Smart Shopping List AI Agent.
+      
+      Your job is to:
+      1. Analyze the 'ingredients needed' for all recipes.
+      2. Compare against the 'current inventory' from the database.
+      3. DECISION: Identify items that are MISSING and must be purchased.
+      4. Group items by store section for efficient shopping.
+      5. Estimate quantities needed.
+      
+      OUTPUT FORMAT: JSON object (NO markdown):
+      {
+        "shoppingList": [
+          {
+            "name": "item name",
+            "quantity": "amount needed",
+            "category": "produce|dairy|meat|pantry|frozen|bakery|other",
+            "forRecipes": ["Recipe 1", "Recipe 2"],
+            "priority": "high|medium|low",
+            "estimatedPrice": "$X.XX"
+          }
+        ],
+        "summary": {
+          "totalItems": 5,
+          "estimatedTotal": "$25.00",
+          "missingEssentials": ["item1", "item2"],
+          "recipesFullyCovered": ["Recipe that needs no shopping"],
+          "recipesNeedingShopping": ["Recipe 1", "Recipe 2"]
+        },
+        "inventoryStatus": "Brief summary of what's available vs needed"
+      }
+      
+      If nothing is missing (inventory covers all recipes), return:
+      { "shoppingList": [], "summary": { "totalItems": 0, "message": "You have everything!" } }
+    prompt: |
+      Analyze and create a smart shopping list:
+      
+      CURRENT INVENTORY FROM DATABASE:
+      {{ outputs.fetch_inventory.body }}
+      
+      SELECTED RECIPES FROM DATABASE:
+      {{ outputs.fetch_recipes.body }}
+      
+      {% if inputs.recipeFilter != '' %}
+      FILTER: Only consider recipe "{{ inputs.recipeFilter }}"
+      {% endif %}
+      
+      Compare the recipe requirements against inventory and identify what needs to be purchased.
+
+  # ====================================================
+  # PERSISTENCE: Save Shopping List to Firebase
+  # ====================================================
+  - id: save_shopping_list
+    type: io.kestra.plugin.core.http.Request
+    method: PUT
+    uri: "{{ secret('FIREBASE_DB_URL') }}/users/{{ inputs.userId }}/shopping_list.json"
+    contentType: application/json
+    body: "{{ outputs.shopping_agent.textOutput }}"
+
+outputs:
+  - id: shoppingList
+    type: STRING
+    value: "{{ outputs.shopping_agent.textOutput }}"
+
+triggers:
+  - id: webhook
+    type: io.kestra.plugin.core.trigger.Webhook
+    key: shopping-list-webhook-key-12345
+    inputs:
+      userId: "{{ trigger.body.userId ?? 'user_001' }}"
+      recipeFilter: "{{ trigger.body.recipeFilter ?? '' }}"

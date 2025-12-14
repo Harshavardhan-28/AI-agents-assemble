@@ -1,0 +1,152 @@
+# =============================================================================
+# MAIN ORCHESTRATOR: SMART FRIDGE
+# Role: Entry point that chains all subflows together for a complete experience.
+#       Can be triggered to run the full pipeline or individual steps.
+#
+# WAKANDA DATA AWARD SUMMARY:
+# 1. manage-inventory: Agent SUMMARIZES visual/text data into structured format
+# 2. generate-recipes: Agent SUMMARIZES inventory to generate content
+# 3. create-shopping-list: Agent makes DECISIONS by comparing two data sources
+# =============================================================================
+id: smart-fridge-main
+namespace: ai.smartfridge
+description: "Master orchestrator: Inventory → Recipes → Shopping List pipeline"
+
+inputs:
+  - id: userId
+    type: STRING
+    displayName: User ID
+    defaults: "user_001"
+  - id: fridgeImage
+    type: STRING
+    displayName: Fridge Image (Base64/URL)
+    defaults: ""
+  - id: manualInventory
+    type: STRING
+    displayName: Manual Inventory Items
+    defaults: ""
+  - id: skillLevel
+    type: SELECT
+    displayName: Cooking Skill
+    values: ["beginner", "intermediate", "advanced"]
+    defaults: "beginner"
+  - id: availableTime
+    type: INT
+    displayName: Available Time (minutes)
+    defaults: 30
+  - id: dietaryRestriction
+    type: SELECT
+    displayName: Dietary Restriction
+    values: ["None", "Vegetarian", "Vegan", "Pescatarian", "Keto", "Paleo", "Gluten-Free", "Halal"]
+    defaults: "None"
+  - id: allergies
+    type: STRING
+    displayName: Allergies
+    defaults: "None"
+  # Control which steps to run
+  - id: runInventory
+    type: BOOLEAN
+    displayName: Update Inventory?
+    defaults: true
+  - id: runRecipes
+    type: BOOLEAN
+    displayName: Generate Recipes?
+    defaults: true
+  - id: runShopping
+    type: BOOLEAN
+    displayName: Create Shopping List?
+    defaults: true
+
+tasks:
+  # ====================================================
+  # STEP 1: Inventory Management (Conditional)
+  # ====================================================
+  - id: step_1_inventory
+    type: io.kestra.plugin.core.flow.If
+    condition: "{{ inputs.runInventory }}"
+    then:
+      - id: run_inventory_flow
+        type: io.kestra.plugin.core.flow.Subflow
+        namespace: ai.smartfridge
+        flowId: manage-inventory
+        inputs:
+          userId: "{{ inputs.userId }}"
+          fridgeImage: "{{ inputs.fridgeImage }}"
+          manualInventory: "{{ inputs.manualInventory }}"
+        wait: true
+        transmitFailed: true
+
+  # ====================================================
+  # STEP 2: Recipe Generation (Conditional)
+  # ====================================================
+  - id: step_2_recipes
+    type: io.kestra.plugin.core.flow.If
+    condition: "{{ inputs.runRecipes }}"
+    then:
+      - id: run_recipes_flow
+        type: io.kestra.plugin.core.flow.Subflow
+        namespace: ai.smartfridge
+        flowId: generate-recipes
+        inputs:
+          userId: "{{ inputs.userId }}"
+          skillLevel: "{{ inputs.skillLevel }}"
+          availableTime: "{{ inputs.availableTime }}"
+          dietaryRestriction: "{{ inputs.dietaryRestriction }}"
+          allergies: "{{ inputs.allergies }}"
+        wait: true
+        transmitFailed: true
+
+  # ====================================================
+  # STEP 3: Shopping List Creation (Conditional)
+  # ====================================================
+  - id: step_3_shopping
+    type: io.kestra.plugin.core.flow.If
+    condition: "{{ inputs.runShopping }}"
+    then:
+      - id: run_shopping_flow
+        type: io.kestra.plugin.core.flow.Subflow
+        namespace: ai.smartfridge
+        flowId: create-shopping-list
+        inputs:
+          userId: "{{ inputs.userId }}"
+        wait: true
+        transmitFailed: true
+
+  # ====================================================
+  # FINAL: Aggregate Results
+  # ====================================================
+  - id: aggregate_results
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ secret('FIREBASE_DB_URL') }}/users/{{ inputs.userId }}.json"
+    method: GET
+
+  - id: final_output
+    type: io.kestra.plugin.core.output.OutputValues
+    values:
+      userId: "{{ inputs.userId }}"
+      fullData: "{{ outputs.aggregate_results.body }}"
+      stepsExecuted:
+        inventory: "{{ inputs.runInventory }}"
+        recipes: "{{ inputs.runRecipes }}"
+        shopping: "{{ inputs.runShopping }}"
+
+outputs:
+  - id: result
+    type: STRING
+    value: "{{ outputs.final_output.values.fullData }}"
+
+triggers:
+  - id: webhook
+    type: io.kestra.plugin.core.trigger.Webhook
+    key: smartfridge-main-webhook-key-12345
+    inputs:
+      userId: "{{ trigger.body.userId ?? 'user_001' }}"
+      fridgeImage: "{{ trigger.body.fridgeImage ?? '' }}"
+      manualInventory: "{{ trigger.body.manualInventory ?? '' }}"
+      skillLevel: "{{ trigger.body.skillLevel ?? 'beginner' }}"
+      availableTime: "{{ trigger.body.availableTime ?? 30 }}"
+      dietaryRestriction: "{{ trigger.body.dietaryRestriction ?? 'None' }}"
+      allergies: "{{ trigger.body.allergies ?? 'None' }}"
+      runInventory: "{{ trigger.body.runInventory ?? true }}"
+      runRecipes: "{{ trigger.body.runRecipes ?? true }}"
+      runShopping: "{{ trigger.body.runShopping ?? true }}"

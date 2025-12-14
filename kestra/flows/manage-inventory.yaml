@@ -1,0 +1,102 @@
+# =============================================================================
+# FLOW 1: INVENTORY MANAGER
+# Role: Ingests image/text, uses AI Agent to extract/summarize ingredients,
+#       and saves them to Firebase Realtime Database.
+# 
+# WAKANDA DATA AWARD: Agent summarizes visual data (Image) and text 
+#                     into structured inventory format.
+# =============================================================================
+id: manage-inventory
+namespace: ai.smartfridge
+description: "Step 1: Ingests image/text, creates structured inventory, saves to Firebase."
+
+inputs:
+  - id: userId
+    type: STRING
+    displayName: User ID
+    defaults: "user_001"
+  - id: fridgeImage
+    type: STRING
+    displayName: Fridge Image (Base64/URL)
+    defaults: ""
+  - id: manualInventory
+    type: STRING
+    displayName: Manual Items (comma-separated or JSON)
+    defaults: ""
+
+tasks:
+  # ====================================================
+  # WAKANDA GOAL: AI Agent Summarizes Input Data
+  # ====================================================
+  - id: inventory_agent
+    type: io.kestra.plugin.ai.agent.AIAgent
+    provider:
+      type: io.kestra.plugin.ai.provider.GoogleGemini
+      modelName: gemini-2.5-flash
+      apiKey: "{{ secret('GEMINI_API_KEY') }}"
+    systemMessage: |
+      You are an Inventory Manager AI Agent.
+      
+      Your job is to:
+      1. If an image is provided, call the 'analyze_image' tool to extract food items.
+      2. Combine image results with any manual text input.
+      3. Deduplicate and normalize item names (lowercase, singular form).
+      
+      OUTPUT FORMAT: A strict JSON array of objects. Each object has:
+      - name: string (item name)
+      - quantity: string (estimated quantity like "1", "2 lbs", "half gallon")
+      - category: string (one of: dairy, produce, meat, pantry, frozen, beverages, other)
+      
+      Example: [{"name": "milk", "quantity": "1 gallon", "category": "dairy"}, {"name": "eggs", "quantity": "12", "category": "dairy"}]
+      
+      Return ONLY the JSON array, no markdown formatting.
+    prompt: |
+      Process the following inputs and create a unified inventory:
+      
+      Image Provided: {{ inputs.fridgeImage != '' }}
+      Manual Input: {{ inputs.manualInventory }}
+      
+      If an image is provided, analyze it first using the tool.
+    tools:
+      - type: io.kestra.plugin.ai.tool.KestraTask
+        tasks:
+          - id: analyze_image
+            type: io.kestra.plugin.gemini.MultimodalCompletion
+            apiKey: "{{ secret('GEMINI_API_KEY') }}"
+            model: gemini-2.5-flash
+            contents:
+              - role: USER
+                content: |
+                  Analyze this fridge/pantry image carefully. 
+                  List EVERY food item you can identify with estimated quantities.
+                  Format: "item name (quantity)" - one per line.
+                  Be thorough - check all shelves, drawers, and door compartments.
+              - role: USER
+                content: "{{ inputs.fridgeImage }}"
+
+  # ====================================================
+  # PERSISTENCE: Save to Firebase Realtime Database
+  # ====================================================
+  - id: save_inventory_firebase
+    type: io.kestra.plugin.core.http.Request
+    method: PUT
+    uri: "{{ secret('FIREBASE_DB_URL') }}/users/{{ inputs.userId }}/inventory.json"
+    contentType: application/json
+    body: "{{ outputs.inventory_agent.textOutput }}"
+
+outputs:
+  - id: currentInventory
+    type: STRING
+    value: "{{ outputs.inventory_agent.textOutput }}"
+  - id: itemCount
+    type: STRING
+    value: "{{ outputs.inventory_agent.textOutput }}"
+
+triggers:
+  - id: webhook
+    type: io.kestra.plugin.core.trigger.Webhook
+    key: inventory-manager-webhook-key-12345
+    inputs:
+      userId: "{{ trigger.body.userId ?? 'user_001' }}"
+      fridgeImage: "{{ trigger.body.fridgeImage ?? '' }}"
+      manualInventory: "{{ trigger.body.manualInventory ?? '' }}"

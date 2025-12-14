@@ -3,7 +3,7 @@ import './globals.css';
 import { AuthProvider } from '@/components/AuthProvider';
 
 export const metadata: Metadata = {
-  title: 'Smart Fridge Recipes',
+  title: 'Kitchen OS - Smart Fridge',
   description: 'AI-powered recipe assistant for your fridge and pantry.'
 };
 
@@ -14,7 +14,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="min-h-screen bg-slate-950 text-slate-50">
+      <body className="min-h-screen bg-kitchen-bg text-warm-100">
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>

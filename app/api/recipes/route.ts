@@ -64,19 +64,31 @@ export async function POST(request: NextRequest) {
     
     // Log what we're doing
     console.log(`[API] Generating recipes via ${useKestra ? 'Kestra AI Agent' : 'Direct Gemini'}`);
+    console.log(`[API] Kestra URL: ${process.env.KESTRA_AGENT_URL || 'Not configured'}`);
     console.log(`[API] Has image: ${Boolean(fridgeImage)}, Inventory items: ${input.inventory.length}`);
+    console.log(`[API] Preferences:`, { skillLevel, availableTimeMinutes, dietPreferences, allergies });
     
     const plan: RecipeResponse = useKestra
       ? await generateRecipePlanViaKestra(input)
       : await generateRecipePlan(input);
     
+    console.log(`[API] Recipe plan generated successfully:`, {
+      recipesCount: plan.recipes?.length || 0,
+      shoppingListCount: plan.shoppingList?.length || 0
+    });
+    
     return NextResponse.json(plan);
   } catch (err) {
-    console.error('Error generating recipe plan', err);
+    console.error('[API] Error generating recipe plan:', err);
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+    const errorStack = err instanceof Error ? err.stack : undefined;
+    console.error('[API] Error stack:', errorStack);
+    
     return new NextResponse(
       JSON.stringify({ 
         error: 'Failed to generate recipes',
-        details: err instanceof Error ? err.message : 'Unknown error'
+        details: errorMessage,
+        timestamp: new Date().toISOString()
       }), 
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
